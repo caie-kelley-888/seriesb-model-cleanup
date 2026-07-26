@@ -1,0 +1,21 @@
+{
+  "skill_name": "model-cleanup",
+  "evals": [
+    {
+      "id": 0,
+      "name": "cleanup-formatting-structure",
+      "prompt": "One of our Series B portfolio companies sent over their financial model and it's a bit of a mess. Can you clean it up so it looks investor-ready? The file is gigafactory_messy.xlsx.",
+      "expected_output": "A cleaned .xlsx: 10pt Arial throughout, hardcodes in blue / formulas in black / cross-tab links in green, a centralized Control assumptions tab with the duplicated inputs lifted into it, a Notes tab, and a written summary of what changed and what still needs sources. Original file untouched.",
+      "files": ["fixtures/gigafactory_messy.xlsx"],
+      "assertions": []
+    },
+    {
+      "id": 1,
+      "name": "add-unit-economics-breakeven",
+      "prompt": "This gigafactory model (gigafactory_messy.xlsx) shows revenue and gross profit but I can't see the unit economics or how much cushion they have on utilization. Can you build out a proper per-unit economics breakdown and add a utilization breakeven?",
+      "expected_output": "A per-kWh (or per-line) unit economics block (revenue, variable cost, contribution, margin %), a utilization breakeven with the cushion stated (assumed util minus breakeven), and capex intensity/payback where possible. Inputs wired to a centralized assumptions tab; invented numbers avoided (gaps marked for the founder).",
+      "files": ["fixtures/gigafactory_messy.xlsx"],
+      "assertions": []
+    }
+  ]
+}

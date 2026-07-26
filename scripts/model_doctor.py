@@ -334,17 +334,119 @@ def render_report(a):
 # ---------------------------------------------------------------------------
 # FIX
 # ---------------------------------------------------------------------------
+SECTION_HEADER_RE = re.compile(r"^\s*\d+[a-z]?[\.\)]")  # "1.", "2a.", "3)" …
+
+
+def _decimals(fmt):
+    """Count decimal places in a number format (the run of 0s after the dot)."""
+    if not fmt:
+        return 0
+    m = re.search(r"\.(0+)", fmt)
+    return len(m.group(1)) if m else 0
+
+
+def house_format(existing, value):
+    """Return a number format in the house convention (negatives in red
+    parentheses, zero as a dash), or None to leave the cell alone.
+
+    Conservative: upgrades cells that already carry a format (preserving
+    whether they're %, $, or plain and how many decimals), and formats large
+    General numbers with thousands separators. Small General numbers and
+    sub-1 values are left alone and flagged, because a bare 0.13 could be a
+    rate, a ratio, or a multiple — the script shouldn't guess."""
+    has_fmt = existing and existing != "General"
+    dec = _decimals(existing)
+    if has_fmt:
+        # Preserve anything the author deliberately styled: embedded units/text
+        # (`#,##0" MW"`), multiples (`0.0"x"`), or a format that already handles
+        # negatives (`[Red]`). Never strip a unit or fight an existing choice.
+        if '"' in existing or "[Red]" in existing:
+            return None
+        if "x" in existing.lower():
+            return None
+        sep = "#,##0" if "#,##" in existing else "0"
+        if "%" in existing:
+            pct = "0" + (("." + "0" * dec) if dec else "")
+            return f"{pct}%;[Red]({pct}%);-"
+        if any(s in existing for s in ("$", "€", "£")):
+            cur = "$#,##0" + (("." + "0" * dec) if dec else "")
+            return f"{cur};[Red]({cur});-"
+        # a plain numeric format with no negative handling -> add the house convention
+        numb = sep + (("." + "0" * dec) if dec else "")
+        return f"{numb};[Red]({numb});-"
+    # General cell: only touch clearly-large numbers; leave small/ambiguous alone.
+    if is_number(value) and abs(value) >= 1000:
+        return "#,##0;[Red](#,##0);-"
+    return None
+
+
+def apply_layout(ws, log):
+    """Freeze panes, widen the label column, and bold section headers on an
+    existing sheet — the layout moves that make a model read like an
+    institutional one. All heuristic and reversible."""
+    # find the first column that holds data (numbers/formulas); columns to its
+    # left are labels/units.
+    first_data_col = None
+    first_data_row = None
+    for row in ws.iter_rows():
+        for c in row:
+            if c.value is None or c.value == "":
+                continue
+            is_data = is_number(c.value) or (isinstance(c.value, str) and c.value.startswith("="))
+            if is_data:
+                if first_data_col is None or c.column < first_data_col:
+                    first_data_col = c.column
+                if first_data_row is None or c.row < first_data_row:
+                    first_data_row = c.row
+    # freeze so labels (left) and headers (above) stay put
+    if first_data_col and first_data_col >= 2 and first_data_row and first_data_row >= 2 and not ws.freeze_panes:
+        ws.freeze_panes = ws.cell(row=first_data_row, column=first_data_col).coordinate
+        log.append(f"{ws.title}: froze panes at {ws.freeze_panes}")
+    # widen the label column (A) to fit its longest label, capped
+    maxlen = 0
+    for c in ws["A"]:
+        if isinstance(c.value, str):
+            maxlen = max(maxlen, len(c.value))
+    if maxlen:
+        want = max(24, min(maxlen + 2, 48))
+        if (ws.column_dimensions["A"].width or 0) < want:
+            ws.column_dimensions["A"].width = want
+            log.append(f"{ws.title}: set label column A width to {want}")
+    # bold section headers: a col-A text cell that is ALL CAPS or numbered,
+    # whose row carries no data cell.
+    for row in ws.iter_rows():
+        a = row[0]
+        if not isinstance(a.value, str):
+            continue
+        txt = a.value.strip()
+        looks_header = (len(txt) > 3 and (txt.upper() == txt and any(ch.isalpha() for ch in txt))) \
+            or SECTION_HEADER_RE.match(txt)
+        if not looks_header:
+            continue
+        row_has_data = any(
+            (is_number(c.value) or (isinstance(c.value, str) and c.value.startswith("=")))
+            for c in row)
+        if row_has_data:
+            continue
+        if not a.font.bold:
+            ff = a.font
+            a.font = Font(name=BODY_FONT, size=ff.size or BODY_SIZE, bold=True,
+                          italic=ff.italic, color=col_rgb(ff) or BLACK)
+
+
 def fix(path, out):
     wb = openpyxl.load_workbook(path, data_only=False)
     log = []
     control_sheets = {s for s in wb.sheetnames if norm(s) in CONTROL_NAMES}
+    fmt_flagged = []  # ambiguous General numbers we deliberately left alone
 
-    for ws in wb.worksheets:
+    existing_sheets = list(wb.worksheets)
+    for ws in existing_sheets:
         for c in iter_content_cells(ws):
             f = c.font
             new_name = BODY_FONT
-            # keep header sizing: only shrink oversized body-ish text conservatively.
-            # We standardize the family always, and size only when it's a small body size (<=12).
+            # keep header sizing: standardize the family always, and shrink to
+            # 10pt only for body-sized text (<=12), leaving true headers larger.
             cur_size = f.size if f and f.size else BODY_SIZE
             new_size = BODY_SIZE if (cur_size and cur_size <= 12) else cur_size
 
@@ -381,7 +483,18 @@ def fix(path, out):
                     changed_reason.append("hardcode->blue")
             # text cells: leave color as-is
 
-            # apply
+            # number format -> house convention (conservative)
+            if is_number(val) or (isinstance(val, str) and val.startswith("=")):
+                target_fmt = house_format(c.number_format, val)
+                if target_fmt and target_fmt != c.number_format:
+                    c.number_format = target_fmt
+                    changed_reason.append("number format")
+                elif (is_number(val) and val not in (0, 1)
+                      and (not c.number_format or c.number_format == "General")
+                      and abs(val) < 1000):
+                    fmt_flagged.append(f"{ws.title}!{c.coordinate}")
+
+            # apply font/color
             font_changed = (f.name != new_name) or (cur_size != new_size) or changed_reason
             if font_changed:
                 c.font = Font(
@@ -394,6 +507,9 @@ def fix(path, out):
                     log.append(f"{ws.title}!{c.coordinate}: "
                                + ", ".join(([f"font->{new_name}"] if f.name != new_name else []) + changed_reason))
 
+        # layout pass for this sheet
+        apply_layout(ws, log)
+
     # scaffold missing tabs
     if not control_sheets:
         scaffold_control(wb)
@@ -401,6 +517,11 @@ def fix(path, out):
     if not (set(norm(s) for s in wb.sheetnames) & NOTES_NAMES):
         scaffold_notes(wb)
         log.append("Added scaffolded 'Notes' methodology tab.")
+
+    if fmt_flagged:
+        log.append(f"[flagged] {len(fmt_flagged)} small/General numbers left unformatted "
+                   f"(could be a rate, ratio, or multiple — set these by hand): "
+                   + ", ".join(fmt_flagged[:12]) + (" …" if len(fmt_flagged) > 12 else ""))
 
     wb.save(out)
     return log

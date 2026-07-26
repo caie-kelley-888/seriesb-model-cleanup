@@ -49,7 +49,9 @@ python scripts/model_doctor.py audit "<model.xlsx>" --report audit_report.md
 python scripts/model_doctor.py fix "<model.xlsx>" --out "<name>_cleaned.xlsx"
 ```
 
-`audit` gives you the punch list: mis-colored cells, magic numbers, duplicated assumptions (centralization candidates), missing tabs, errors, external links. `fix` standardizes font to **10pt Arial**, recolors clear color-code errors, and scaffolds `Control` and `Notes` tabs if missing — fonts, colors, and number formats only, never values or formula logic. Every change is logged. The script is deliberately conservative (a good model already greens links selectively, so it won't fight the author); the judgment patterns below are yours to fix by hand.
+`audit` gives you the punch list: mis-colored cells, magic numbers, duplicated assumptions (centralization candidates), missing tabs, errors, external links.
+
+`fix` applies the whole mechanical layer to a copy: font to **10pt Arial** (headers keep their larger size), the bright color code (inputs `#0000FF`, links `#00B050`, external/error red), freeze panes on each sheet, a widened label column, bolded section headers, and the house **number-format convention** — negatives in red parentheses, zeros as a dash. It scaffolds `Control` and `Notes` tabs if they're missing. It never changes a value or a formula, and it's deliberately non-destructive: it preserves embedded units (`#,##0" MW"`), multiples (`0.0"x"`), decimals, and any format that already handles negatives, and it leaves genuinely ambiguous General numbers (a bare `0.13` that could be a rate, ratio, or multiple) alone and flags them. Every change is logged. The judgment patterns below are still yours to fix by hand.
 
 ## Patterns to fix
 
